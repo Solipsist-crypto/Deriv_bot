@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from account import AccountManager
 from market import MarketManager
 from strategy import MultiIndicatorStrategy
@@ -18,30 +18,33 @@ background_tasks = set()
 
 async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
     """Фонова задача: відкриває угоду, чекає результат, пише в БД та надсилає пуш."""
-    
-    # 1. Повідомляємо про старт
-    await tg.send_notification(f"🚀 <b>Вхід у ринок:</b> {symbol}\n🔔 <b>Сигнал:</b> {signal}\n💵 <b>Ціна:</b> {analysis['close_price']}")
-    
-    trade_result = await trader.execute_trade(
-        symbol=symbol, signal=signal, amount=STAKE_AMOUNT, 
-        duration=EXPIRATION_MINUTES, duration_unit="m"
-    )
-    
-    if trade_result:
-        analysis['symbol'] = symbol
+    try:
+        # 1. Повідомляємо про старт
+        await tg.send_notification(f"🚀 <b>Вхід у ринок:</b> {symbol}\n🔔 <b>Сигнал:</b> {signal}\n💵 <b>Ціна:</b> {analysis['close_price']}")
         
-        # 2. Записуємо в PostgreSQL
-        await db.log_trade(analysis_data=analysis, trade_result=trade_result, stake=STAKE_AMOUNT)
-        
-        # 3. Повідомляємо про результат
-        status_icon = "🟢" if trade_result["win"] else "🔴"
-        profit_str = f"{trade_result['profit']:+.2f}"
-        
-        await tg.send_notification(
-            f"{status_icon} <b>Угоду закрито:</b> {symbol}\n"
-            f"📊 <b>Результат:</b> {trade_result['status'].upper()}\n"
-            f"💵 <b>Профіт:</b> {profit_str} USD"
+        trade_result = await trader.execute_trade(
+            symbol=symbol, signal=signal, amount=STAKE_AMOUNT, 
+            duration=EXPIRATION_MINUTES, duration_unit="m"
         )
+        
+        if trade_result:
+            analysis['symbol'] = symbol
+            
+            # 2. Записуємо в PostgreSQL
+            await db.log_trade(analysis_data=analysis, trade_result=trade_result, stake=STAKE_AMOUNT)
+            
+            # 3. Повідомляємо про результат
+            status_icon = "🟢" if trade_result["win"] else "🔴"
+            profit_str = f"{trade_result['profit']:+.2f}"
+            
+            await tg.send_notification(
+                f"{status_icon} <b>Угоду закрито:</b> {symbol}\n"
+                f"📊 <b>Результат:</b> {trade_result['status'].upper()}\n"
+                f"💵 <b>Профіт:</b> {profit_str} USD"
+            )
+    except Exception as e:
+        print(f"❌ Помилка у фоновій задачі угоди для {symbol}: {e}")
+        await tg.send_notification(f"⚠️ <b>Помилка угоди ({symbol}):</b> {e}")
 
 async def scan_and_trade(acc, market, strategy, trader, db, tg):
     print("\n--------------------------------------------------")
@@ -49,21 +52,24 @@ async def scan_and_trade(acc, market, strategy, trader, db, tg):
     
     for symbol in SYMBOLS:
         print(f"\n--- Аналіз {symbol} ---")
-        candles = await market.get_candles(symbol=symbol, count=100, timeframe=TIMEFRAME_SECONDS)
+        try:
+            candles = await market.get_candles(symbol=symbol, count=100, timeframe=TIMEFRAME_SECONDS)
 
-        if candles:
-            analysis = strategy.analyze(candles)
-            signal = analysis['signal']
-            print(f"💵 Ціна: {analysis['close_price']} | Сигнал: {signal}")
+            if candles:
+                analysis = strategy.analyze(candles)
+                signal = analysis['signal']
+                print(f"💵 Ціна: {analysis['close_price']} | Сигнал: {signal}")
 
-            if signal in ["BUY", "SELL"]:
-                task = asyncio.create_task(
-                    handle_trade_task(trader, db, tg, acc, symbol, signal, analysis)
-                )
-                background_tasks.add(task)
-                task.add_done_callback(background_tasks.discard)
-        else:
-            print(f"❌ Не вдалося отримати свічки для {symbol}")
+                if signal in ["BUY", "SELL"]:
+                    task = asyncio.create_task(
+                        handle_trade_task(trader, db, tg, acc, symbol, signal, analysis)
+                    )
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+            else:
+                print(f"❌ Не вдалося отримати свічки для {symbol}")
+        except Exception as e:
+            print(f"❌ Помилка аналізу {symbol}: {e}")
 
         await asyncio.sleep(1)
 
@@ -93,27 +99,36 @@ async def main():
 
     try:
         while True:
-            now = datetime.utcnow()
-            hour = now.hour
-            weekday = now.weekday() # 0 - ПН, 1 - ВТ, ..., 4 - ПТ, 5 - СБ, 6 - НД
+            try:
+                # Використовуємо сучасний timezone-aware час
+                now = datetime.now(timezone.utc)
+                hour = now.hour
+                weekday = now.weekday() # 0 - ПН, 1 - ВТ, ..., 4 - ПТ, 5 - СБ, 6 - НД
 
-            # Условие 1: Выходные (Пятница >= 23:00, Суббота весь день, Воскресенье < 21:00)
-            is_weekend = (weekday == 5) or (weekday == 4 and hour >= 23) or (weekday == 6 and hour < 21)
-            
-            # Условие 2: Ежедневная ночная пауза (с 21:00 до 02:00)
-            is_night = (hour >= 21 or hour < 2)
+                # Вихідні (П'ятниця >= 23:00, Субота весь день, Неділя < 21:00)
+                is_weekend = (weekday == 5) or (weekday == 4 and hour >= 23) or (weekday == 6 and hour < 21)
+                
+                # Щоденна нічна пауза (21:00 - 02:00)
+                # Виключаємо вечір неділі та ранок понеділка для азійської сесії
+                is_night = (hour >= 21 or hour < 2) and not (weekday == 6 and hour >= 21) and not (weekday == 0 and hour < 2)
 
-            if is_weekend or is_night:
-                reason = "Вихідні на біржі" if is_weekend else "Нічна перерва"
-                print(f"😴 {reason} (Поточний час: {hour}:00 UTC). Бот відпочиває...")
+                if is_weekend or is_night:
+                    reason = "Вихідні на біржі" if is_weekend else "Нічна перерва"
+                    print(f"😴 {reason} (Поточний час: {hour:02d}:{now.minute:02d} UTC). Бот відпочиває...")
+                    await asyncio.sleep(INTERVAL_SECONDS)
+                    continue
+
+                # Якщо ринок працює, запускаємо сканування
+                await scan_and_trade(acc, market, strategy, trader, db, tg)
+                print(f"\n⏳ Наступна перевірка через {INTERVAL_SECONDS // 60} хв...")
                 await asyncio.sleep(INTERVAL_SECONDS)
-                continue
-
-            # Если рынок работает, запускаем сканирование
-            await scan_and_trade(acc, market, strategy, trader, db, tg)
-            print(f"\n⏳ Наступна перевірка через {INTERVAL_SECONDS // 60} хв...")
-            await asyncio.sleep(INTERVAL_SECONDS)
             
+            except Exception as loop_error:
+                print(f"❌ Збій у головному циклі: {loop_error}")
+                print("🔄 Спроба перепідключення до акаунту...")
+                acc.connect()  # Відновлення сесії
+                await asyncio.sleep(10)
+
     except KeyboardInterrupt:
         print("\n🛑 Бота зупинено вручну (Ctrl+C).")
         await tg.send_notification("🛑 Бота зупинено.")
