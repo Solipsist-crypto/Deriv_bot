@@ -1,22 +1,17 @@
 import json
 import websockets
+from config import APP_ID
 
 class MarketManager:
     def __init__(self, account_manager):
         self.account_manager = account_manager
+        # Використовуємо публічний WebSocket Deriv! 
+        # Більше жодних OTP та таймаутів при отриманні свічок.
+        self.public_ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
 
     async def get_candles(self, symbol: str, count: int = 100, timeframe: int = 300) -> list:
-        """
-        Отримує історичні свічки для будь-якого активу.
-        timeframe: 300 = 5 хвилин.
-        """
-        ws_url = self.account_manager.get_otp_url()
-        if not ws_url:
-            print(f"❌ [MarketManager] Не вдалося отримати WebSocket URL для {symbol}.")
-            return []
-
         try:
-            async with websockets.connect(ws_url) as ws:
+            async with websockets.connect(self.public_ws_url) as ws:
                 request = {
                     "ticks_history": symbol,
                     "adjust_start_time": 1,

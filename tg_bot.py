@@ -13,18 +13,16 @@ class TelegramNotifier:
     def _register_handlers(self):
         @self.dp.message(Command("stats"))
         async def send_stats(message: types.Message):
-            # Захист: відповідаємо лише власнику
             if str(message.chat.id) != str(self.chat_id):
                 return
             
-            # Отримуємо дані з БД
             stats = await self.db.get_statistics()
             total = stats["total"]
             wins = stats["wins"]
             winrate = (wins / total * 100) if total > 0 else 0.0
             
-            # Оновлюємо баланс через AccountManager
-            self.acc.connect()
+            # Асинхронне оновлення балансу (не блокує бота)
+            await self.acc.connect()
             
             text = (
                 f"📊 <b>Статистика Торгового Бота</b>\n\n"
@@ -35,13 +33,13 @@ class TelegramNotifier:
             await message.answer(text, parse_mode="HTML")
 
     async def send_notification(self, text: str):
-        """Відправляє повідомлення у визначений чат."""
         try:
             await self.bot.send_message(chat_id=self.chat_id, text=text, parse_mode="HTML")
         except Exception as e:
             print(f"❌ [Telegram] Помилка відправки: {e}")
 
     async def start_polling(self):
-        """Запускає слухача команд (працює у фоні)."""
         print("🤖 [Telegram] Бот готовий приймати команди.")
+        # ФІКС TelegramConflictError: очищаємо старі з'єднання перед запуском
+        await self.bot.delete_webhook(drop_pending_updates=True)
         await self.dp.start_polling(self.bot)

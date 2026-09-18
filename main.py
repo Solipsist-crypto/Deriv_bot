@@ -15,11 +15,12 @@ TIMEFRAME_SECONDS = 900
 INTERVAL_SECONDS = 300
 
 background_tasks = set()
+active_trades = set()  # Захист від дублювання угод на одному активі
 
 async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
     """Фонова задача: відкриває угоду, чекає результат, пише в БД та надсилає пуш."""
     try:
-        # 1. Повідомляємо про старт
+        active_trades.add(symbol)  # Блокуємо актив для нових угод
         await tg.send_notification(f"🚀 <b>Вхід у ринок:</b> {symbol}\n🔔 <b>Сигнал:</b> {signal}\n💵 <b>Ціна:</b> {analysis['close_price']}")
         
         trade_result = await trader.execute_trade(
@@ -30,10 +31,8 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
         if trade_result:
             analysis['symbol'] = symbol
             
-            # 2. Записуємо в PostgreSQL
             await db.log_trade(analysis_data=analysis, trade_result=trade_result, stake=STAKE_AMOUNT)
             
-            # 3. Повідомляємо про результат
             status_icon = "🟢" if trade_result["win"] else "🔴"
             profit_str = f"{trade_result['profit']:+.2f}"
             
@@ -45,12 +44,18 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
     except Exception as e:
         print(f"❌ Помилка у фоновій задачі угоди для {symbol}: {e}")
         await tg.send_notification(f"⚠️ <b>Помилка угоди ({symbol}):</b> {e}")
+    finally:
+        active_trades.discard(symbol)  # Звільняємо актив після завершення угоди
 
 async def scan_and_trade(acc, market, strategy, trader, db, tg):
     print("\n--------------------------------------------------")
     print("📊 Початок нового циклу сканування (асинхронний режим)...")
     
     for symbol in SYMBOLS:
+        if symbol in active_trades:
+            print(f"⏳ Угода по {symbol} ще відкрита. Пропускаємо сканування.")
+            continue
+
         print(f"\n--- Аналіз {symbol} ---")
         try:
             candles = await market.get_candles(symbol=symbol, count=100, timeframe=TIMEFRAME_SECONDS)
@@ -77,11 +82,11 @@ async def main():
     print("🚀 Запуск ML Торгового Бота (PostgreSQL + Telegram)...")
     
     acc = AccountManager()
-    if not acc.connect():
+    is_connected = await acc.connect()
+    if not is_connected:
         print("🛑 Помилка авторизації в AccountManager.")
         return
 
-    # Ініціалізація бази даних та підключення
     db = DatabaseManager(db_url=DATABASE_URL)
     await db.connect()
 
@@ -89,10 +94,7 @@ async def main():
     strategy = MultiIndicatorStrategy()
     trader = TraderManager(acc)
     
-    # Ініціалізація Telegram Бота
     tg = TelegramNotifier(token=TG_BOT_TOKEN, chat_id=TG_CHAT_ID, db_manager=db, account_manager=acc)
-    
-    # Запускаємо фонове слухання команд Telegram (наприклад, /stats)
     asyncio.create_task(tg.start_polling())
     
     await tg.send_notification("✅ Торговий бот успішно запущений та моніторить ринок.")
@@ -100,16 +102,11 @@ async def main():
     try:
         while True:
             try:
-                # Використовуємо сучасний timezone-aware час
                 now = datetime.now(timezone.utc)
                 hour = now.hour
-                weekday = now.weekday() # 0 - ПН, 1 - ВТ, ..., 4 - ПТ, 5 - СБ, 6 - НД
+                weekday = now.weekday()
 
-                # Вихідні (П'ятниця >= 23:00, Субота весь день, Неділя < 21:00)
                 is_weekend = (weekday == 5) or (weekday == 4 and hour >= 23) or (weekday == 6 and hour < 21)
-                
-                # Щоденна нічна пауза (21:00 - 02:00)
-                # Виключаємо вечір неділі та ранок понеділка для азійської сесії
                 is_night = (hour >= 21 or hour < 2) and not (weekday == 6 and hour >= 21) and not (weekday == 0 and hour < 2)
 
                 if is_weekend or is_night:
@@ -118,7 +115,6 @@ async def main():
                     await asyncio.sleep(INTERVAL_SECONDS)
                     continue
 
-                # Якщо ринок працює, запускаємо сканування
                 await scan_and_trade(acc, market, strategy, trader, db, tg)
                 print(f"\n⏳ Наступна перевірка через {INTERVAL_SECONDS // 60} хв...")
                 await asyncio.sleep(INTERVAL_SECONDS)
@@ -126,7 +122,7 @@ async def main():
             except Exception as loop_error:
                 print(f"❌ Збій у головному циклі: {loop_error}")
                 print("🔄 Спроба перепідключення до акаунту...")
-                acc.connect()  # Відновлення сесії
+                await acc.connect()
                 await asyncio.sleep(10)
 
     except KeyboardInterrupt:
