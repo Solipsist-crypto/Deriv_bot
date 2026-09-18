@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from account import AccountManager
 from market import MarketManager
 from strategy import MultiIndicatorStrategy
@@ -92,6 +93,23 @@ async def main():
 
     try:
         while True:
+            now = datetime.utcnow()
+            hour = now.hour
+            weekday = now.weekday() # 0 - ПН, 1 - ВТ, ..., 4 - ПТ, 5 - СБ, 6 - НД
+
+            # Условие 1: Выходные (Пятница >= 23:00, Суббота весь день, Воскресенье < 21:00)
+            is_weekend = (weekday == 5) or (weekday == 4 and hour >= 23) or (weekday == 6 and hour < 21)
+            
+            # Условие 2: Ежедневная ночная пауза (с 21:00 до 02:00)
+            is_night = (hour >= 21 or hour < 2)
+
+            if is_weekend or is_night:
+                reason = "Вихідні на біржі" if is_weekend else "Нічна перерва"
+                print(f"😴 {reason} (Поточний час: {hour}:00 UTC). Бот відпочиває...")
+                await asyncio.sleep(INTERVAL_SECONDS)
+                continue
+
+            # Если рынок работает, запускаем сканирование
             await scan_and_trade(acc, market, strategy, trader, db, tg)
             print(f"\n⏳ Наступна перевірка через {INTERVAL_SECONDS // 60} хв...")
             await asyncio.sleep(INTERVAL_SECONDS)
