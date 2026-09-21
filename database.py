@@ -51,18 +51,18 @@ class DatabaseManager:
                 query,
                 datetime.now(),
                 analysis.get("symbol", ""),
-                analysis.get("close_price", 0.0),
-                analysis.get("rsi", 0.0),
+                float(analysis.get("close_price", 0.0)),
+                float(analysis.get("rsi", 0.0) or 0.0),
                 analysis.get("rsi_signal", ""),
                 analysis.get("ema_signal", ""),
                 analysis.get("bb_signal", ""),
-                analysis.get("buy_votes", 0),
-                analysis.get("sell_votes", 0),
-                trade.get("signal", ""),
-                trade.get("contract_id", ""),
-                stake,
-                trade.get("profit", 0.0),
-                trade.get("win", 0)
+                int(analysis.get("buy_votes", 0)),
+                int(analysis.get("sell_votes", 0)),
+                analysis.get("signal", ""),  # Беремо сигнал з індикаторного аналізу
+                str(trade.get("contract_id", "")),
+                float(stake),
+                float(trade.get("profit", 0.0)),
+                int(trade.get("win", 0))
             )
             print(f"💾 [Database] Угоду {trade.get('contract_id')} збережено в БД.")
 

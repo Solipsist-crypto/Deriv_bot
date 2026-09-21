@@ -31,7 +31,7 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
         
         if trade_result:
             analysis['symbol'] = symbol
-            await db.log_trade(analysis_data=analysis, trade_result=trade_result, stake=STAKE_AMOUNT)
+            await db.log_trade(analysis, trade_result, STAKE_AMOUNT)
             
             status_icon = "🟢" if trade_result["win"] else "🔴"
             profit_str = f"{trade_result['profit']:+.2f}"
