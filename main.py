@@ -1,4 +1,5 @@
 import asyncio
+import websockets
 from datetime import datetime, timezone
 from account import AccountManager
 from market import MarketManager
@@ -15,12 +16,12 @@ TIMEFRAME_SECONDS = 900
 INTERVAL_SECONDS = 300
 
 background_tasks = set()
-active_trades = set()  # Захист від дублювання угод на одному активі
+active_trades = set()
 
 async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
     """Фонова задача: відкриває угоду, чекає результат, пише в БД та надсилає пуш."""
     try:
-        active_trades.add(symbol)  # Блокуємо актив для нових угод
+        active_trades.add(symbol)
         await tg.send_notification(f"🚀 <b>Вхід у ринок:</b> {symbol}\n🔔 <b>Сигнал:</b> {signal}\n💵 <b>Ціна:</b> {analysis['close_price']}")
         
         trade_result = await trader.execute_trade(
@@ -30,7 +31,6 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
         
         if trade_result:
             analysis['symbol'] = symbol
-            
             await db.log_trade(analysis_data=analysis, trade_result=trade_result, stake=STAKE_AMOUNT)
             
             status_icon = "🟢" if trade_result["win"] else "🔴"
@@ -45,38 +45,49 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
         print(f"❌ Помилка у фоновій задачі угоди для {symbol}: {e}")
         await tg.send_notification(f"⚠️ <b>Помилка угоди ({symbol}):</b> {e}")
     finally:
-        active_trades.discard(symbol)  # Звільняємо актив після завершення угоди
+        active_trades.discard(symbol)
 
 async def scan_and_trade(acc, market, strategy, trader, db, tg):
     print("\n--------------------------------------------------")
     print("📊 Початок нового циклу сканування (асинхронний режим)...")
     
-    for symbol in SYMBOLS:
-        if symbol in active_trades:
-            print(f"⏳ Угода по {symbol} ще відкрита. Пропускаємо сканування.")
-            continue
+    # Отримуємо URL і відкриваємо ОДНЕ з'єднання для всього циклу
+    ws_url = await acc.get_otp_url()
+    if not ws_url:
+        print("❌ Не вдалося отримати WebSocket URL для сканування.")
+        return
 
-        print(f"\n--- Аналіз {symbol} ---")
-        try:
-            candles = await market.get_candles(symbol=symbol, count=100, timeframe=TIMEFRAME_SECONDS)
+    try:
+        async with websockets.connect(ws_url, open_timeout=15) as ws:
+            for symbol in SYMBOLS:
+                if symbol in active_trades:
+                    print(f"⏳ Угода по {symbol} ще відкрита. Пропускаємо сканування.")
+                    continue
 
-            if candles:
-                analysis = strategy.analyze(candles)
-                signal = analysis['signal']
-                print(f"💵 Ціна: {analysis['close_price']} | Сигнал: {signal}")
+                print(f"\n--- Аналіз {symbol} ---")
+                try:
+                    # Передаємо відкритий сокет ws у функцію
+                    candles = await market.get_candles(ws, symbol=symbol, count=100, timeframe=TIMEFRAME_SECONDS)
 
-                if signal in ["BUY", "SELL"]:
-                    task = asyncio.create_task(
-                        handle_trade_task(trader, db, tg, acc, symbol, signal, analysis)
-                    )
-                    background_tasks.add(task)
-                    task.add_done_callback(background_tasks.discard)
-            else:
-                print(f"❌ Не вдалося отримати свічки для {symbol}")
-        except Exception as e:
-            print(f"❌ Помилка аналізу {symbol}: {e}")
+                    if candles:
+                        analysis = strategy.analyze(candles)
+                        signal = analysis['signal']
+                        print(f"💵 Ціна: {analysis['close_price']} | Сигнал: {signal}")
 
-        await asyncio.sleep(1)
+                        if signal in ["BUY", "SELL"]:
+                            task = asyncio.create_task(
+                                handle_trade_task(trader, db, tg, acc, symbol, signal, analysis)
+                            )
+                            background_tasks.add(task)
+                            task.add_done_callback(background_tasks.discard)
+                    else:
+                        print(f"❌ Не вдалося отримати свічки для {symbol}")
+                except Exception as e:
+                    print(f"❌ Помилка аналізу {symbol}: {e}")
+
+                await asyncio.sleep(1) # Секундна пауза між запитами, як у тестовому скрипті
+    except Exception as e:
+        print(f"❌ Помилка з'єднання WebSocket у циклі: {e}")
 
 async def main():
     print("🚀 Запуск ML Торгового Бота (PostgreSQL + Telegram)...")
