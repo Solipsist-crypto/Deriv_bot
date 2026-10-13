@@ -7,6 +7,7 @@ from strategy import MultiIndicatorStrategy
 from trader import TraderManager
 from database import DatabaseManager
 from tg_bot import TelegramNotifier
+from ml_filter import MLFilter
 from config import DATABASE_URL, TG_BOT_TOKEN, TG_CHAT_ID
 
 SYMBOLS = ["frxXAUUSD", "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxAUDUSD"]
@@ -18,11 +19,15 @@ INTERVAL_SECONDS = 300
 background_tasks = set()
 active_trades = set()
 
-async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
+async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis, prob_win):
     """Фонова задача: відкриває угоду, чекає результат, пише в БД та надсилає пуш."""
     try:
         active_trades.add(symbol)
-        await tg.send_notification(f"🚀 <b>Вхід у ринок:</b> {symbol}\n🔔 <b>Сигнал:</b> {signal}\n💵 <b>Ціна:</b> {analysis['close_price']}")
+        await tg.send_notification(
+            f"🚀 <b>Вхід у ринок:</b> {symbol}\n"
+            f"🔔 <b>Сигнал:</b> {signal} (ML: {prob_win:.1%})\n"
+            f"💵 <b>Ціна:</b> {analysis['close_price']}"
+        )
         
         trade_result = await trader.execute_trade(
             symbol=symbol, signal=signal, amount=STAKE_AMOUNT, 
@@ -47,7 +52,7 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis):
     finally:
         active_trades.discard(symbol)
 
-async def scan_and_trade(acc, market, strategy, trader, db, tg):
+async def scan_and_trade(acc, market, strategy, trader, db, tg, ml_filter):
     print("\n--------------------------------------------------")
     print("📊 Початок нового циклу сканування (асинхронний режим)...")
     
@@ -66,31 +71,37 @@ async def scan_and_trade(acc, market, strategy, trader, db, tg):
 
                 print(f"\n--- Аналіз {symbol} ---")
                 try:
-                    # Передаємо відкритий сокет ws у функцію
                     candles = await market.get_candles(ws, symbol=symbol, count=100, timeframe=TIMEFRAME_SECONDS)
 
                     if candles:
                         analysis = strategy.analyze(candles)
+                        analysis['symbol'] = symbol
                         signal = analysis['signal']
-                        print(f"💵 Ціна: {analysis['close_price']} | Сигнал: {signal}")
+                        print(f"💵 Ціна: {analysis['close_price']} | Сигнал стратегії: {signal}")
 
                         if signal in ["BUY", "SELL"]:
-                            task = asyncio.create_task(
-                                handle_trade_task(trader, db, tg, acc, symbol, signal, analysis)
-                            )
-                            background_tasks.add(task)
-                            task.add_done_callback(background_tasks.discard)
+                            # 🤖 Перевірка через XGBoost ML-модель
+                            should_trade, prob_win = ml_filter.should_trade(analysis)
+                            
+                            if should_trade:
+                                task = asyncio.create_task(
+                                    handle_trade_task(trader, db, tg, acc, symbol, signal, analysis, prob_win)
+                                )
+                                background_tasks.add(task)
+                                task.add_done_callback(background_tasks.discard)
+                            else:
+                                print(f"🛑 [MLFilter] Сигнал {signal} по {symbol} ВІДХИЛЕНО (Ймовірність Win: {prob_win:.1%})")
                     else:
                         print(f"❌ Не вдалося отримати свічки для {symbol}")
                 except Exception as e:
                     print(f"❌ Помилка аналізу {symbol}: {e}")
 
-                await asyncio.sleep(1) # Секундна пауза між запитами, як у тестовому скрипті
+                await asyncio.sleep(1) # Секундна пауза між запитами
     except Exception as e:
         print(f"❌ Помилка з'єднання WebSocket у циклі: {e}")
 
 async def main():
-    print("🚀 Запуск ML Торгового Бота (PostgreSQL + Telegram)...")
+    print("🚀 Запуск ML Торгового Бота (PostgreSQL + Telegram + XGBoost)...")
     
     acc = AccountManager()
     is_connected = await acc.connect()
@@ -105,10 +116,13 @@ async def main():
     strategy = MultiIndicatorStrategy()
     trader = TraderManager(acc)
     
+    # Ініціалізація ML-фільтра (поріг 55%)
+    ml_filter = MLFilter(min_win_probability=0.55)
+    
     tg = TelegramNotifier(token=TG_BOT_TOKEN, chat_id=TG_CHAT_ID, db_manager=db, account_manager=acc)
     asyncio.create_task(tg.start_polling())
     
-    await tg.send_notification("✅ Торговий бот успішно запущений та моніторить ринок.")
+    await tg.send_notification("✅ Торговий бот з ML-фільтрацією успішно запущений та моніторить ринок.")
 
     try:
         while True:
@@ -126,7 +140,7 @@ async def main():
                     await asyncio.sleep(INTERVAL_SECONDS)
                     continue
 
-                await scan_and_trade(acc, market, strategy, trader, db, tg)
+                await scan_and_trade(acc, market, strategy, trader, db, tg, ml_filter)
                 print(f"\n⏳ Наступна перевірка через {INTERVAL_SECONDS // 60} хв...")
                 await asyncio.sleep(INTERVAL_SECONDS)
             
