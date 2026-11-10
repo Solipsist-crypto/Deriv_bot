@@ -11,3 +11,5 @@ venv/
 
 # Локальні датасети
 trades_dataset.csv
+export_dataset.py
+reset_db.py

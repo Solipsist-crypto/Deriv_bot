@@ -3,7 +3,7 @@ import pandas as pd
 import asyncpg
 
 # Публічний URL для підключення з ПК
-PUBLIC_DATABASE_URL = "postgresql://postgres:tzRYOayVRDHBsCQUZbdrngLfytCnDEwn@nozomi.proxy.rlwy.net:27027/railway"
+PUBLIC_DATABASE_URL = "postgresql://postgres:gneNoWjtTGIwKRjqWdVFkPFYwoCKtEBS@maglev.proxy.rlwy.net:26840/railway"
 
 async def main():
     print("📥 Підключаємося до бази даних PostgreSQL на Railway через Public Proxy...")

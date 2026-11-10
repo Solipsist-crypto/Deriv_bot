@@ -22,6 +22,11 @@ class DatabaseManager:
             rsi_signal VARCHAR(10),
             ema_signal VARCHAR(10),
             bb_signal VARCHAR(10),
+            macd FLOAT,
+            macd_signal VARCHAR(10),
+            atr FLOAT,
+            hour INT,
+            dayofweek INT,
             buy_votes INT,
             sell_votes INT,
             signal VARCHAR(10),
@@ -40,25 +45,33 @@ class DatabaseManager:
         if not trade:
             return
 
+        now = datetime.now()
+        
         query = """
         INSERT INTO trades (
             timestamp, symbol, close_price, rsi, rsi_signal, ema_signal, bb_signal, 
+            macd, macd_signal, atr, hour, dayofweek,
             buy_votes, sell_votes, signal, contract_id, stake, profit, win
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         """
         async with self.pool.acquire() as conn:
             await conn.execute(
                 query,
-                datetime.now(),
+                now,
                 analysis.get("symbol", ""),
                 float(analysis.get("close_price", 0.0)),
                 float(analysis.get("rsi", 0.0) or 0.0),
                 analysis.get("rsi_signal", ""),
                 analysis.get("ema_signal", ""),
                 analysis.get("bb_signal", ""),
+                float(analysis.get("macd", 0.0)),
+                analysis.get("macd_signal", ""),
+                float(analysis.get("atr", 0.0)),
+                now.hour,
+                now.weekday(),
                 int(analysis.get("buy_votes", 0)),
                 int(analysis.get("sell_votes", 0)),
-                analysis.get("signal", ""),  # Беремо сигнал з індикаторного аналізу
+                analysis.get("signal", ""),
                 str(trade.get("contract_id", "")),
                 float(stake),
                 float(trade.get("profit", 0.0)),
