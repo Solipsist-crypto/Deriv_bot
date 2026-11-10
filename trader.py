@@ -8,9 +8,33 @@ class TraderManager:
         # Черга для уникнення мережевих конфліктів при одночасних сигналах
         self.trade_lock = asyncio.Lock()
 
-    async def execute_trade(self, symbol: str, signal: str, amount: float = 1.0, duration: int = 15, duration_unit: str = "m") -> dict:
+    async def execute_trade(
+        self, 
+        symbol: str, 
+        signal: str, 
+        amount: float = 1.0, 
+        duration: int = 15, 
+        duration_unit: str = "m",
+        atr_percentile: float = 0.5  # <--- ДОДАНО ДЛЯ ДИНАМІЧНОЇ ЕКСПІРАЦІЇ
+    ) -> dict:
         if signal not in ["BUY", "SELL"]:
             return None
+
+        # 💡 ДИНАМІЧНА ЕКСПІРАЦІЯ
+        # Якщо волатильність висока (>70%) - тренд швидко реалізується, ставимо 30 хв.
+        # Якщо низька (<30%) - ринок повільний, даємо йому 45 хв на розгін.
+        if atr_percentile > 0.7:
+            duration = 30
+            duration_unit = "m"
+            print(f"⚡ [TraderManager] Висока волатильність (ATR%={atr_percentile:.2f}) -> Експірація 30 хв.")
+        elif atr_percentile < 0.3:
+            duration = 45
+            duration_unit = "m"
+            print(f"🐢 [TraderManager] Низька волатильність (ATR%={atr_percentile:.2f}) -> Експірація 45 хв.")
+        else:
+            duration = 15
+            duration_unit = "m"
+            print(f"⚖️ [TraderManager] Середня волатильність (ATR%={atr_percentile:.2f}) -> Експірація 15 хв.")
 
         contract_type = "CALL" if signal == "BUY" else "PUT"
         contract_id = None
@@ -24,7 +48,6 @@ class TraderManager:
                     continue
 
                 try:
-                    # Відкриваємо нове з'єднання на кожну спробу, щоб ізолювати підписки (subscribe: 1)
                     async with websockets.connect(ws_url, open_timeout=10) as ws:
                         print(f"📩 [TraderManager] Запитуємо proposal (спроба {attempt}): {contract_type} по {symbol} (${amount}, {duration}{duration_unit})...")
                         
@@ -44,7 +67,6 @@ class TraderManager:
                         proposal_id = None
                         ask_price = None
 
-                        # Ловимо саме повідомлення з msg_type == "proposal"
                         while True:
                             try:
                                 resp_str = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -68,7 +90,6 @@ class TraderManager:
 
                         print(f"✅ [TraderManager] Proposal отримано! ID: {proposal_id} | Ціна: {ask_price} USD")
 
-                        # Надсилаємо ордер на купівлю
                         buy_req = {
                             "buy": proposal_id,
                             "price": ask_price
@@ -76,7 +97,6 @@ class TraderManager:
                         print(f"🎰 [TraderManager] Відправляємо ордер на купівлю {symbol}...")
                         await ws.send(json.dumps(buy_req))
 
-                        # Фільтруємо стрім повідомлень (ігноруємо тіки/оновлення proposal і чекаємо "buy")
                         is_bought = False
                         for _ in range(20):
                             try:
@@ -109,12 +129,12 @@ class TraderManager:
             print(f"❌ [TraderManager] Не вдалося відкрити угоду по {symbol} після 3 спроб.")
             return None
 
-        # 2. ОЧІКУВАННЯ ЕКСПІРАЦІЇ (15 хвилин)
+        # 2. ОЧІКУВАННЯ ЕКСПІРАЦІЇ
         wait_seconds = (duration * 60 if duration_unit == "m" else duration) + 5
         print(f"⏳ [TraderManager] Чекаємо {wait_seconds} сек. до закінчення експірації по {symbol}...")
         await asyncio.sleep(wait_seconds)
 
-        # 3. ПЕРЕВІРКА РЕЗУЛЬТАТУ ЗАКРИТТЯ (З очікуванням is_sold)
+        # 3. ПЕРЕВІРКА РЕЗУЛЬТАТУ ЗАКРИТТЯ
         print(f"🔍 [TraderManager] Запитуємо результат закриття угоди {contract_id} ({symbol})...")
         check_ws_url = await self.account_manager.get_otp_url()
         if not check_ws_url:
@@ -129,7 +149,6 @@ class TraderManager:
                     "subscribe": 1
                 }))
                 
-                # Чекаємо, поки брокер підтвердить факт продажу (is_sold)
                 for _ in range(120):
                     try:
                         msg = await asyncio.wait_for(ws.recv(), timeout=15)
@@ -153,7 +172,6 @@ class TraderManager:
                                 "win": is_win
                             }
                     except asyncio.TimeoutError:
-                        # Якщо timeout спрацював, просто чекаємо наступного повідомлення
                         continue
 
         except Exception as e:

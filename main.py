@@ -26,12 +26,15 @@ async def handle_trade_task(trader, db, tg, acc, symbol, signal, analysis, prob_
         await tg.send_notification(
             f"🚀 <b>Вхід у ринок:</b> {symbol}\n"
             f"🔔 <b>Сигнал:</b> {signal} (ML: {prob_win:.1%})\n"
-            f"💵 <b>Ціна:</b> {analysis['close_price']}"
+            f"💵 <b>Ціна:</b> {analysis['close_price']}\n"
+            f"📊 <b>ADX:</b> {analysis.get('adx', 0):.1f} | <b>ATR%:</b> {analysis.get('atr_percentile', 0.5):.2f}"
         )
         
+        # 👇 ДОДАНО atr_percentile ДЛЯ ДИНАМІЧНОЇ ЕКСПІРАЦІЇ
         trade_result = await trader.execute_trade(
             symbol=symbol, signal=signal, amount=STAKE_AMOUNT, 
-            duration=EXPIRATION_MINUTES, duration_unit="m"
+            duration=EXPIRATION_MINUTES, duration_unit="m",
+            atr_percentile=analysis.get('atr_percentile', 0.5)
         )
         
         if trade_result:
@@ -56,7 +59,6 @@ async def scan_and_trade(acc, market, strategy, trader, db, tg, ml_filter):
     print("\n--------------------------------------------------")
     print("📊 Початок нового циклу сканування (асинхронний режим)...")
     
-    # Отримуємо URL і відкриваємо ОДНЕ з'єднання для всього циклу
     ws_url = await acc.get_otp_url()
     if not ws_url:
         print("❌ Не вдалося отримати WebSocket URL для сканування.")
@@ -77,10 +79,10 @@ async def scan_and_trade(acc, market, strategy, trader, db, tg, ml_filter):
                         analysis = strategy.analyze(candles)
                         analysis['symbol'] = symbol
                         signal = analysis['signal']
-                        print(f"💵 Ціна: {analysis['close_price']} | Сигнал стратегії: {signal}")
+                        print(f"💵 Ціна: {analysis['close_price']} | Сигнал стратегії: {signal} | ADX: {analysis.get('adx', 0):.1f} | ATR%: {analysis.get('atr_percentile', 0.5):.2f}")
 
                         if signal in ["BUY", "SELL"]:
-                            # 🤖 Перевірка через XGBoost ML-модель
+                            # 🤖 Перевірка через ML-модель (зараз заглушка, завжди True)
                             should_trade, prob_win = ml_filter.should_trade(analysis)
                             
                             if should_trade:
@@ -96,12 +98,12 @@ async def scan_and_trade(acc, market, strategy, trader, db, tg, ml_filter):
                 except Exception as e:
                     print(f"❌ Помилка аналізу {symbol}: {e}")
 
-                await asyncio.sleep(1) # Секундна пауза між запитами
+                await asyncio.sleep(1)
     except Exception as e:
         print(f"❌ Помилка з'єднання WebSocket у циклі: {e}")
 
 async def main():
-    print("🚀 Запуск ML Торгового Бота (PostgreSQL + Telegram + XGBoost)...")
+    print("🚀 Запуск ML Торгового Бота (PostgreSQL + Telegram + ML v3 Data Collector)...")
     
     acc = AccountManager()
     is_connected = await acc.connect()
@@ -116,13 +118,13 @@ async def main():
     strategy = MultiIndicatorStrategy()
     trader = TraderManager(acc)
     
-    # Ініціалізація ML-фільтра (поріг 55%)
+    # ML-фільтр (заглушка на час збору даних)
     ml_filter = MLFilter(min_win_probability=0.55)
     
     tg = TelegramNotifier(token=TG_BOT_TOKEN, chat_id=TG_CHAT_ID, db_manager=db, account_manager=acc)
     asyncio.create_task(tg.start_polling())
     
-    await tg.send_notification("✅ Торговий бот з ML-фільтрацією успішно запущений та моніторить ринок.")
+    await tg.send_notification("✅ Бот запущений у режимі збору даних (ML v3).")
 
     try:
         while True:
